@@ -1,0 +1,318 @@
+import numpy as np
+from scipy import integrate, optimize, linalg, signal, stats
+from matplotlib import pyplot as plt
+import sympy as sym
+from numpy.polynomial import polynomial
+from IPython.display import display, Markdown
+from matplotlib.colors import LogNorm
+import matplotlib.ticker as tick
+import matplotlib.dates as mdates
+from matplotlib import colors
+from datetime import datetime
+import numpy.polynomial.polynomial as poly
+import seaborn as sns
+import statsmodels.api as sm
+
+from scipy.integrate import odeint
+from scipy.interpolate import interp1d
+from scipy import ndimage
+import pandas as pd
+def PSD_welches(datamat, fs = 30, t_fft = None, plot = 0, f_range = [], legend = [],title = '', axis_lims = [], ncols = 1, colormap = 'gist_rainbow'):
+    
+
+    # INPUT
+    # datamat: matrix of measurements with ith row giving trajectory of ith output (ny x nt)
+    # fs: sampling rate (Hz)
+    # t_fft: block length (in seconds) for computing DFT (multiple such blocks avaraged in welch) 
+    # plot: 0 (dont plot results) / 1(plot results)
+    
+    # PASSED TO PLOT PSD Function
+    # f_range : frequency range to plot [min frequency, max frequency] (1 x 2)
+    # legend: string array of stream/output names (1 x ny)
+    # title: plot title (string) 
+    # axis_lims: y axis (PSD) limits for plotting (1 x 2)
+    # ncols: number of columns in figure legend (integer)
+    # colormap: colormap (string) or array of color names (1 x ny) for color of each output's PSD plot
+    
+    # OUTPUT
+    # f : frequency array (1 x nf)
+    # PSD : PSD matrix with ith row representign PSD of ith output (ny x nf)
+    
+    
+    datamat = np.array(datamat)
+    if t_fft == None:
+        nperseg = int(np.power(2,(np.ceil(np.log(len(datamat[0,:])/8.0)/np.log(2)))))
+    else:
+        nperseg = int(t_fft*fs)
+    for i in range(len(datamat)):
+        f, Pxx_den = signal.welch(datamat[i,:], fs = fs, nperseg = nperseg, detrend = False, return_onesided = False) # default scaling density
+        if i == 0:
+            PSD = np.zeros([len(datamat[:,0]),len(f[f>=0])])
+        PSD[i,:] = Pxx_den[f>=0]
+    f = f[f>=0]
+    if not(plot==0):
+        plot_PSD(PSD,f,f_range,legend,title, axis_lims, ncols, colormap)
+    return f, PSD
+
+def plot_PSD(PSD,f,f_range = [], legend = [],title = '', axis_lims = [], ncols = 1, colormap = 'gist_rainbow'):
+    # for plotting PSD results
+    
+    # INPUT
+    # PSD : matrix of PSD values with ith row giving PSD (1 x nf) of ith measurement/output (ny x nf)
+    # f : frequency values vector (1 x nf)
+    # f_range : frequency range to plot [min frequency, max frequency] (1 x 2)
+    # legend: string array of stream/output names (1 x ny)
+    # title: plot title (string) 
+    # axis_lims: y axis (PSD) limits for plotting (1 x 2)
+    # ncols: number of columns in figure legend (integer)
+    # colormap: colormap (string) or array of color names (1 x ny) for color of each output's PSD plot
+    
+    # OUTPUT
+    # None
+    
+    
+    nstreams = len(PSD[:,0])
+    if len(legend) == 0:
+        legend = ['Stream_' + str(ii) for ii in range(nstreams)]
+    if len(f_range)==0:
+        f_range = [np.min(f),np.max(f)]
+        
+    f = np.array(f)
+    PSD = np.abs(PSD)
+    ixf = np.where((f >= f_range[0])&(f <= f_range[1]))[0]
+    
+    if type(colormap)==str: # colormap
+        cm = plt.get_cmap(colormap)(np.linspace(0,1,nstreams))
+    else:# individual colors
+        cm = colormap
+    
+    # PSD Plot
+    plt.figure(figsize = (10,4), dpi = 300)
+    for i in range(nstreams):
+        plt.plot(f[ixf],10*np.log10(PSD[i,ixf]), color = cm[i], label = legend[i], alpha = 0.9)    
+    plt.legend()            
+    plt.xlabel('Frequency(Hz)', fontsize = 18)
+    plt.ylabel('PSD(dB)', fontsize = 18)
+    plt.xticks(fontsize = 16)
+    plt.yticks(fontsize = 16)
+    plt.title(title, fontsize = 20)
+    if len(axis_lims)>0:
+        plt.ylim(axis_lims)
+    plt.minorticks_on()   
+    plt.show()
+    
+
+    
+def spectrogram_STFT(x, fs, tblock=10 * 60, overlap=0):
+    # moving periodogram
+
+    # INPUT
+    # x: time series data / single trajectory (1 x nt)
+    # fs: sampling rate in Hz
+    # tblock: moving window size in seconds
+    # overlap: (0 to 1) amount of overlap between adjacent windows
+
+    # OUTPUT
+    # f: frequency values (1 x nf)
+    # t: time array (1 x nt)
+    # S: time varying PSD matrix (nf x nt)
+
+    x = np.array(x)
+    t = np.arange(0, len(x)) / fs
+    nseg = int(tblock * fs)
+    f, t, S = signal.spectrogram(x, fs=fs, nperseg=nseg, nfft=nseg, noverlap=int(overlap * nseg), mode='psd',
+                                 return_onesided=False)
+    S = S[f >= 0]
+    f = f[f >= 0]
+    return f, t, S
+
+
+def spectrogram_welch(x, fs, twin_welch=60, overlap_welch=0.5, tblock=10 * 60, overlap=0, usemedian=0):
+    # welch takes an average of square of fourier amplitude from multiple small windows (of length twin_welch).
+    # the number of windows to be averaged and combined into 1 large window is determined by tblock setting
+
+    # INPUT
+    # x: time series data / single trajectory (1 x nt)
+    # fs: sampling rate in Hz
+    # twin_welch: smaller window size in seconds
+    # overlap_welch: (0 to 1) amount of overlap between adjacent small windows
+    # tblock: large segment length in seconds (which contains multiple small windows (of twin_welch seconds) to be averaged)
+    # overlap: (0 to 1) amount of overlap between adjacent big windows of length tblock seconds
+    # usemedian = 0 use mean to combine small windows / 1 use median to combine small windows
+
+    # OUTPUT
+    # f: frequency values (1 x nf)
+    # tmat: time array (1 x nt)
+    # Sxmat: time varying PSD matrix (nf x nt)
+
+    x = np.array(x)
+    t = np.arange(0, len(x)) / fs
+
+    f, t_stft, Sx = signal.spectrogram(x, fs=fs, nperseg=int(twin_welch * fs), nfft=int(twin_welch * fs),
+                                       noverlap=int(overlap_welch * twin_welch * fs), mode='psd', return_onesided=False)
+
+    nblock = np.min(np.where(t_stft >= tblock)[0])
+    noverlap = int(overlap * nblock)
+
+    N = len(t_stft)
+    tmat = []
+    Sxmat = np.zeros([len(Sx[:, 0]), 1 + (N - nblock) // (nblock - noverlap)])
+    tmat = np.zeros(1 + (N - nblock) // (nblock - noverlap))
+    i = 0
+    count = 0
+    while count < N:
+        ix = np.arange(count, count + nblock)
+
+        try:
+            if usemedian == 1:
+                Sxmat[:, i] = np.median(Sx[:, ix], axis=1)
+            else:
+                Sxmat[:, i] = np.mean(Sx[:, ix], axis=1)
+
+            tmat[i] = np.mean(t_stft[ix])
+            count = count + (nblock - noverlap)
+        except:
+            break
+        i = i + 1
+    Sxmat = Sxmat[f >= 0]
+    f = f[f >= 0]
+
+    return f, tmat, Sxmat
+
+
+def plot_spectrogram_1(S, f, t, fs, ridgemat=[], f_range=[None, None], show_colorbar=1, title=None, axis_lim=[],
+                       cmp='jet', xlabel='Time', ylabel='Frequency(Hz)', interpolation='antialiased', dpi=300, scale='',
+                       logbase=10):
+    # for plotting any time-frequency result,
+    # x axis = time in seconds
+    # color axis: PSD value in db (10*log10(PSD))
+    # y axis: frequency (Hz), can be log or linear depending on f array
+
+    # S: time varying PSD matrix (nf x nt)
+    # f: frequency values (1 x nf)
+    # t: time array in seconds (1 x nt)
+    # fs: sampling rate (Hz)
+    # f_range: [fmin,fmax] range of frequency axis (y axis)
+    # show_colorbar : 1(show)/0(dont show)
+    # title : string
+    # axis_lim : [min,max] range of color axis (PSD values), fully utilizing color range is the key
+    # cmp : colormap (string)
+    # xlabel: string, default 'Time'
+    # ylabel: string, default 'Frequency'
+    # interpolation : pixel interpolation
+    # dpi : dots per inch for plot
+    # scale: linear or log
+    # logbase: base of log to take when plotting frequency in log scale
+
+    S = np.array(S)
+    f = np.array(f)
+    t = np.array(t)
+
+    dt = np.median(np.diff(t))
+
+    if f_range[1] == None:
+        f_range[1] = np.max(f)
+    if f_range[0] == None:
+        f_range[0] = np.min(f)
+
+    ixf = np.where((f >= f_range[0]) & (f <= f_range[1]))[0]
+
+    f = f[ixf]
+    S = S[ixf, :]
+
+    # log or linear scale
+    if scale == '':
+        logf = np.log10(f) / np.log10(logbase)
+        qdlogf = np.quantile(np.diff(logf), [0.25, 0.5, 0.75])
+        if np.max(np.abs(qdlogf - qdlogf[1])) < 1e-6:
+            scale = 'log'
+        else:
+            scale = 'linear'
+
+    if scale.lower() == 'linear':
+        df = np.median(np.diff(f))
+        extentmat = [t[0] - 0.5 * dt, t[-1] + 0.5 * dt, f[0] - 0.5 * df, f[-1] + 0.5 * df]
+    else:
+        logf = np.log10(f) / np.log10(logbase)
+        dlogf = np.median(np.diff(logf))
+        extentmat = [t[0] - 0.5 * dt, t[-1] + 0.5 * dt, logf[0] - 0.5 * dlogf, logf[-1] + 0.5 * dlogf]
+
+    plt.figure(figsize=(10, 5), dpi=dpi)
+    if S.dtype == 'bool':
+        plt.imshow(np.flipud(S), interpolation=None, aspect='auto', cmap=cmp, extent=extentmat)
+        ridgeclr = 'r'
+    else:
+        idxnonzero = np.where(np.abs(S) > 1e-10)
+        idxzero = np.where(np.abs(S) <= 1e-10)
+        logSxx = 10 * np.log10(np.abs(S))
+        if len(axis_lim) == 0:
+            v = np.quantile(logSxx[idxnonzero], [0.02, 0.98])
+            vmin = v[0]
+            vmax = v[1]
+        elif np.max(np.abs(axis_lim)) > 1:
+            vmin = axis_lim[0]
+            vmax = axis_lim[1]
+        else:
+            v = np.quantile(logSxx[idxnonzero], axis_lim)
+            vmin = v[0]
+            vmax = v[1]
+        logSxx[idxzero] = vmin - 1  # earlier 1e5 but that introduces color problem
+        norm = colors.Normalize(vmin=vmin, vmax=vmax)
+        plt.imshow(np.flipud(logSxx), interpolation=interpolation, norm=norm, aspect='auto', cmap=cmp, extent=extentmat)
+
+    plt.xticks(fontsize=16, rotation='vertical')
+    if scale == 'log':
+        intticks = np.unique(np.round(logf, 1))
+        intticks = intticks[np.where((intticks >= logf[0]) & (intticks <= logf[-1]))]
+        plt.yticks(intticks, np.round(logbase ** (intticks), 2), fontsize=14)
+    else:
+        plt.yticks(fontsize=14)
+    plt.ylabel(ylabel, fontsize=18)
+    plt.xlabel(xlabel, fontsize=18)
+    if not (title == None):
+        plt.title(title, fontsize=20)
+
+    plt.minorticks_on()
+    if (show_colorbar == 1) & (S.dtype != 'bool'):
+        plt.colorbar()
+    plt.tight_layout()
+    plt.show()
+
+def CSD_welches(datamat,fs = 30, t_fft = None):
+    
+    # Cross spectral estimate using Welch
+    # Note: Fourier of Rxy(t) = E(x(t+tau)y*(tau)) = Sxy(f)
+    
+    # INPUT
+    # datamat: matrix of measurements with ith row giving trajectory of ith output (ny x nt)
+    # fs: sampling rate (Hz)
+    # t_fft: block length (in seconds) for computing DFT (multiple such blocks avaraged in welch)
+    
+    # OUTPUT
+    # fij: frequency array (1 x nf) 
+    # Pxy: CSD complex matrix with Pxy(i,j,:) gives CSD between ith and jth measurement (ny x ny x nf)
+    
+    datamat = np.array(datamat)
+    nchannel = len(datamat[:,0])
+    if t_fft == None:
+        nperseg = int(np.power(2,(np.ceil(np.log(len(datamat[0,:])/8.0)/np.log(2)))))
+    else:
+        nperseg = int(fs*t_fft)
+    
+    fij, Pxixj = signal.csd(datamat[0,:], datamat[0,:], fs, nperseg=nperseg, scaling = 'density', detrend = 'constant', return_onesided = False) 
+    
+    Pxy = np.zeros([nchannel,nchannel,len(np.where(fij>=0)[0])], dtype = complex)
+    
+    for i in range(nchannel):
+        for j in range(nchannel):
+            # note the j coming before i in the inbuilt function (opposite sign convention to what we used)
+            fij, Pxixj = signal.csd(datamat[j,:], datamat[i,:], fs, nperseg=nperseg, scaling = 'density', detrend = 'constant', return_onesided = False) # overlap between windows is windowlen/2 
+            for k,k1 in enumerate(np.where(fij >=0)[0]):
+                Pxy[i,j,k] = Pxixj[k1]
+    return fij[fij>=0],Pxy
+Data = pd.read_csv('data.csv', header=0)
+f_delta1,t_delta1,S_delta1 = spectrogram_welch(Data.delta1,100)
+idx_high = np.max(np.where((f_delta1 <= 10)))
+plot_PSD(S_delta1.T[:,0:idx_high],f_delta1[0:idx_high],legend = ['$t = 300$', '$t = 900$', '$t = 1500$','$t = 2100$','$t = 2700$','$t = 3300$'])
+plot_spectrogram_1(S_delta1[0:idx_high,:],f_delta1[0:idx_high],t_delta1,fs=100,title='Delta1')
+

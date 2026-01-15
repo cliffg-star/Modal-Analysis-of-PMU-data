@@ -1,0 +1,107 @@
+def CSD_welches(datamat, fs=30, t_fft=None):
+    # Cross spectral estimate using Welch
+    # Note: Fourier of Rxy(t) = E(x(t+tau)y*(tau)) = Sxy(f)
+
+    # INPUT
+    # datamat: matrix of measurements with ith row giving trajectory of ith output (ny x nt)
+    # fs: sampling rate (Hz)
+    # t_fft: block length (in seconds) for computing DFT (multiple such blocks avaraged in welch)
+
+    # OUTPUT
+    # fij: frequency array (1 x nf)
+    # Pxy: CSD complex matrix with Pxy(i,j,:) gives CSD between ith and jth measurement (ny x ny x nf)
+
+    datamat = np.array(datamat)
+    nchannel = len(datamat[:, 0])
+    if t_fft == None:
+        nperseg = int(np.power(2, (np.ceil(np.log(len(datamat[0, :]) / 8.0) / np.log(2)))))
+    else:
+        nperseg = int(fs * t_fft)
+
+    fij, Pxixj = signal.csd(datamat[0, :], datamat[0, :], fs, nperseg=nperseg, scaling='density', detrend='constant',
+                            return_onesided=False)
+
+    Pxy = np.zeros([nchannel, nchannel, len(np.where(fij >= 0)[0])], dtype=complex)
+
+    for i in range(nchannel):
+        for j in range(nchannel):
+            # note the j coming before i in the inbuilt function (opposite sign convention to what we used)
+            fij, Pxixj = signal.csd(datamat[j, :], datamat[i, :], fs, nperseg=nperseg, scaling='density',
+                                    detrend='constant',
+                                    return_onesided=False)  # overlap between windows is windowlen/2
+            for k, k1 in enumerate(np.where(fij >= 0)[0]):
+                Pxy[i, j, k] = Pxixj[k1]
+    return fij[fij >= 0], Pxy
+idx_low = np.min(np.where((Data.t >= 300)))
+idx_high = np.max(np.where((Data.t <= 1000)))
+datamat = Data[['delta1','omega1','delta2','omega2']].values
+datamat_used = datamat[idx_low:idx_high,:]
+f,Syy = CSD_welches(datamat_used.T,fs = 100, t_fft = 60)
+# PSD
+ny = 4
+clrs = plt.get_cmap('Greys')(np.linspace(0.2,1,ny))
+ynames = ['delta1','omega1','delta2','omega2']
+plt.figure(figsize = (8,3), dpi = 300)
+for i in range(ny):
+    plt.plot(f,10*np.log10(np.abs(Syy[i,i,:])), color = clrs[i], linewidth = 1, label = ynames[i])
+plt.title('Output PSD')
+plt.ylabel('S(dB)')
+plt.xlabel('Frequency(Hz)')
+plt.legend(loc = 'upper right')
+plt.show()
+
+# sigma 1
+smat = np.zeros([ny,len(f)])
+for i in range(len(f)):
+    _,S,_ = np.linalg.svd(Syy[:,:,i], full_matrices = False, hermitian = True)
+    smat[:,i] = np.abs(S)
+def plot_modeshape(modeshape, fmode, streamnames, colormap='gist_rainbow', plot_bar=True):
+    # INPUT
+    # modeshape: modeshapes relative to largest participant in each case, complex matrix (ny x nmodes)
+    # fmode: mode frequency (Hz) array (1 x nmodes)
+    # streamnames: names of output measurements string array (1 x ny)
+    # colormap: colormap (string) or array of color names (1 x ny) for color of each output's shape component
+    # plot_bar: boolean, plots mode shape magnitudes as bar chart
+
+    nchannels = np.shape(modeshape)[0]
+    nmode = np.shape(modeshape)[1]
+
+    if type(colormap) == str:
+        cm = plt.get_cmap(colormap)(np.linspace(0, 1, nchannels))
+    else:
+        cm = colormap
+
+    plt.rc('grid', linestyle='--', linewidth=1, color='grey', alpha=0.5)
+    for i in range(nmode):
+        nr = 1
+        nc = 3
+        fig = plt.figure(figsize=(4, 3), dpi=300)
+        gs = fig.add_gridspec(int(nr), nc)
+        ax = ['' for ii in range(2)]
+
+        ax[0] = fig.add_subplot(gs[0:2], projection='polar')
+        ax[1] = fig.add_subplot(gs[2])
+        ixref = np.argmax(np.abs(modeshape[:, i]))
+
+        for j in range(nchannels):
+            ang = [0, np.angle(modeshape[j, i] / modeshape[ixref, i])]
+            mag = [0, np.abs(modeshape[j, i]) / np.abs(modeshape[ixref, i])]  # ui/uref
+            mag[1] = np.round(mag[1] * 1e3) / 1e3
+            ax[0].annotate("", xy=(ang[1], mag[1]), xytext=(ang[1], 0), arrowprops=dict(arrowstyle="->", color=cm[j]))
+            if not (plot_bar):
+                ax[1].plot(np.nan, np.nan, color=cm[j], label=streamnames[j])
+        #             ax[0].plot(ang,mag, label = streamnames[j], color = cm[j], linewidth = 2)
+
+        ax[0].set_title(f"{np.round(fmode[i], 2)} Hz Mode")
+        plt.xticks()
+        plt.yticks()
+        if not (plot_bar):
+            ax[1].legend()
+            ax[1].axis('off')
+
+        if plot_bar:
+            ax[1].barh(np.array(streamnames), np.abs(modeshape[:, i]), color=cm)
+            plt.xticks(rotation='vertical')
+            plt.yticks()
+            ax[1].set_title('Mode Shape Magnitude')
+        plt.tight_layout()
